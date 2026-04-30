@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Сканер</title>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -18,23 +17,22 @@
       justify-content: center;
       padding: 20px;
     }
-    #reader {
+    #video {
       width: 100%;
       max-width: 500px;
-      border-radius: 16px;
-      overflow: hidden;
       border: 2px solid #27ae60;
+      border-radius: 16px;
+      background: #111;
     }
     #status {
       margin-top: 15px;
       font-size: 14px;
-      opacity: 0.85;
       text-align: center;
     }
     #btnStop {
       margin-top: 20px;
       padding: 12px 24px;
-      background: rgba(220,53,69,0.9);
+      background: #f44336;
       color: #fff;
       border: none;
       border-radius: 10px;
@@ -44,21 +42,33 @@
     }
     .error { color: #ff6b6b !important; }
     .success { color: #51cf66 !important; }
+    .fallback-link {
+      margin-top: 15px;
+      padding: 10px 20px;
+      background: #4CAF50;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 8px;
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <div id="reader"></div>
-  <div id="status">🎯 Наведите камеру на штрихкод</div>
+  <video id="video" playsinline autoplay muted></video>
+  <div id="status">📷 Инициализация...</div>
   <button id="btnStop">⏹ Завершить</button>
+  <a href="?fallback=1" class="fallback-link" id="fallbackBtn">🔄 Попробовать другой сканер</a>
 
   <script>
-    let html5QrCode = null;
     let isScanning = true;
+    let stream = null;
+    let detectionInterval = null;
     const statusEl = document.getElementById('status');
+    const videoEl = document.getElementById('video');
     
     function sendToParent(barcode) {
       try {
-        if (window.parent && window.parent !== window) {
+        if (window.parent !== window) {
           window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
         }
         if (window.opener && !window.opener.closed) {
@@ -67,70 +77,103 @@
       } catch (e) { console.error(e); }
     }
     
-    async function startScanner() {
+    async function startBarcodeDetection() {
       try {
+        // Проверяем поддержку Barcode Detection API
+        if (!('BarcodeDetector' in window)) {
+          throw new Error('Barcode Detection API не поддерживается');
+        }
+        
         statusEl.textContent = '📷 Запрос камеры...';
-        html5QrCode = new Html5Qrcode("reader");
         
-        // ✅ ВСЕ форматы штрихкодов
-        const formats = [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.CODE_93,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.CODABAR
-        ];
+        // Запрашиваем камеру
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
         
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          { 
-            fps: 10, 
-            qrbox: { width: 300, height: 150 }, // ✅ Прямоугольная область для линейных штрихкодов
-            aspectRatio: 2.0,
-            formatsToSupport: formats
-          },
-          (decodedText) => {
-            if (isScanning && decodedText?.trim()) {
-              sendToParent(decodedText.trim());
-              statusEl.textContent = '✓ ' + decodedText;
-              statusEl.className = 'success';
-              setTimeout(() => {
-                if (isScanning) {
-                  statusEl.textContent = '🎯 Наведите камеру на штрихкод';
-                  statusEl.className = '';
-                }
-              }, 800);
+        videoEl.srcObject = stream;
+        await new Promise(resolve => {
+          videoEl.onloadedmetadata = () => {
+            videoEl.play();
+            resolve();
+          };
+        });
+        
+        statusEl.textContent = '🎯 Наведите на штрихкод';
+        
+        // Создаём детектор
+        const barcodeDetector = new BarcodeDetector({
+          formats: ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code']
+        });
+        
+        // Функция детекции
+        async function detectBarcode() {
+          if (!isScanning || videoEl.paused || videoEl.ended) return;
+          
+          try {
+            const barcodes = await barcodeDetector.detect(videoEl);
+            
+            if (barcodes.length > 0) {
+              const barcode = barcodes[0].rawValue;
+              if (barcode) {
+                sendToParent(barcode);
+                statusEl.textContent = '✓ ' + barcode;
+                statusEl.className = 'success';
+                
+                // Звук
+                try {
+                  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                  const osc = ctx.createOscillator();
+                  const gain = ctx.createGain();
+                  osc.connect(gain);
+                  gain.connect(ctx.destination);
+                  osc.frequency.value = 800;
+                  osc.type = 'sine';
+                  gain.gain.value = 0.1;
+                  osc.start();
+                  osc.stop(ctx.currentTime + 0.1);
+                } catch(e) {}
+                
+                setTimeout(() => {
+                  if (isScanning) {
+                    statusEl.textContent = '🎯 Наведите на штрихкод';
+                    statusEl.className = '';
+                  }
+                }, 1000);
+              }
             }
-          },
-          (errorMessage) => { }
-        );
+          } catch (err) {
+            console.error('Ошибка детекции:', err);
+          }
+        }
         
-        statusEl.textContent = '🎯 Наведите камеру на штрихкод';
+        // Запускаем детекцию (10 раз в секунду)
+        detectionInterval = setInterval(detectBarcode, 100);
+        
       } catch (err) {
-        statusEl.textContent = '⚠ ' + (err.message || 'Ошибка');
+        console.error('Ошибка:', err);
+        statusEl.textContent = '⚠️ ' + (err.message || 'Ошибка');
         statusEl.className = 'error';
+        
+        // Показываем кнопку fallback
+        document.getElementById('fallbackBtn').style.display = 'inline-block';
       }
     }
     
     document.getElementById('btnStop').addEventListener('click', () => {
       isScanning = false;
-      if (html5QrCode) {
-        html5QrCode.stop().then(() => {
-          html5QrCode.clear();
-          statusEl.textContent = '✅ Готово!';
-          setTimeout(() => window.close(), 1000);
-        });
+      if (detectionInterval) clearInterval(detectionInterval);
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
       }
+      statusEl.textContent = '✅ Завершено';
+      setTimeout(() => window.close(), 500);
     });
     
-    window.addEventListener('load', () => setTimeout(startScanner, 300));
+    window.addEventListener('load', startBarcodeDetection);
     window.addEventListener('beforeunload', () => {
-      if (html5QrCode) html5QrCode.stop().catch(() => {});
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      if (detectionInterval) clearInterval(detectionInterval);
     });
   </script>
 </body>
