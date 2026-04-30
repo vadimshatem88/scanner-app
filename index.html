@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Сканер штрихкодов</title>
+  <!-- Подключаем библиотеку -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,9 +27,10 @@
       overflow: hidden;
       border: 3px solid #4CAF50;
       background: #111;
-    }
-    #reader video {
-      border-radius: 16px;
+      min-height: 300px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     #status {
       margin-top: 20px;
@@ -37,6 +39,7 @@
       text-align: center;
       min-height: 22px;
       padding: 0 10px;
+      max-width: 90%;
     }
     #btnStop {
       margin-top: 25px;
@@ -49,21 +52,41 @@
       font-weight: 600;
       cursor: pointer;
       box-shadow: 0 4px 15px rgba(244,67,54,0.3);
-      touch-action: manipulation;
     }
-    #btnStop:active { 
-      transform: scale(0.97);
-      box-shadow: 0 2px 10px rgba(244,67,54,0.4);
-    }
+    #btnStop:active { transform: scale(0.97); }
     .error { color: #ff6b6b !important; }
     .success { color: #51cf66 !important; }
     .info { color: #74c0fc !important; }
+    .loading {
+      width: 40px;
+      height: 40px;
+      border: 4px solid rgba(76,175,80,0.3);
+      border-top-color: #4CAF50;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    #debug {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.8);
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <div id="reader"></div>
-  <div id="status">🎯 Наведите камеру на штрихкод или QR</div>
+  <div id="reader"><div class="loading"></div></div>
+  <div id="status">📷 Инициализация камеры...</div>
   <button id="btnStop">⏹ Завершить</button>
+  <div id="debug"></div>
 
   <script>
     const params = new URLSearchParams(window.location.search);
@@ -72,11 +95,19 @@
     let html5QrCode = null;
     let isScanning = true;
     const statusEl = document.getElementById('status');
+    const debugEl = document.getElementById('debug');
+    const readerEl = document.getElementById('reader');
     
-    // Отправка данных в родительское окно (Apps Script)
+    // Логирование для отладки
+    function log(msg) {
+      console.log('[SCANNER]', msg);
+      debugEl.textContent = msg;
+      debugEl.style.display = 'block';
+    }
+    
+    // Отправка данных
     function sendToParent(barcode) {
       try {
-        // Для iframe
         if (window.parent && window.parent !== window) {
           window.parent.postMessage({
             type: 'barcode_scanned',
@@ -84,7 +115,6 @@
             location: location
           }, '*');
         }
-        // Для window.open
         if (window.opener && !window.opener.closed) {
           window.opener.postMessage({
             type: 'barcode_scanned',
@@ -92,23 +122,93 @@
             location: location
           }, '*');
         }
-        console.log('📤 Отправлено:', barcode);
+        log('📤 Отправлено: ' + barcode);
       } catch (e) {
         console.error('❌ Ошибка отправки:', e);
       }
     }
     
+    // Проверка поддержки камеры
+    async function checkCameraSupport() {
+      try {
+        log('Проверка поддержки камеры...');
+        
+        // Проверка getUserMedia
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Браузер не поддерживает доступ к камере');
+        }
+        
+        // Проверка HTTPS
+        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+          throw new Error('Требуется HTTPS для доступа к камере');
+        }
+        
+        // Проверка разрешений
+        if (navigator.permissions) {
+          try {
+            const permission = await navigator.permissions.query({ name: 'camera' });
+            log('Статус камеры: ' + permission.state);
+            if (permission.state === 'denied') {
+              throw new Error('Доступ к камере запрещён в настройках');
+            }
+          } catch (e) {
+            log('Не удалось проверить разрешения: ' + e.message);
+          }
+        }
+        
+        return true;
+      } catch (err) {
+        log('❌ ' + err.message);
+        throw err;
+      }
+    }
+    
+    // Запуск сканера
     async function startScanner() {
       try {
-        statusEl.textContent = '📷 Запрос доступа к камере...';
+        statusEl.textContent = '📷 Проверка камеры...';
         statusEl.className = 'info';
+        log('Запуск сканера...');
         
+        // Проверка поддержки
+        await checkCameraSupport();
+        
+        // Проверка библиотеки
+        if (typeof Html5Qrcode === 'undefined') {
+          throw new Error('Библиотека html5-qrcode не загрузилась');
+        }
+        log('Библиотека загружена');
+        
+        // Создание экземпляра
         html5QrCode = new Html5Qrcode("reader");
+        log('Экземпляр создан');
         
+        // Получение списка камер
+        const cameras = await Html5Qrcode.getCameras();
+        log('Найдено камер: ' + cameras.length);
+        
+        if (cameras.length === 0) {
+          throw new Error('Камеры не найдены на устройстве');
+        }
+        
+        // Поиск задней камеры
+        let selectedCamera = cameras[0];
+        for (let cam of cameras) {
+          const label = (cam.label || '').toLowerCase();
+          if (label.includes('back') || label.includes('rear') || 
+              label.includes('environment') || label.includes('задняя')) {
+            selectedCamera = cam;
+            log('Выбрана задняя камера: ' + selectedCamera.label);
+            break;
+          }
+        }
+        
+        // Конфигурация
         const config = { 
           fps: 10, 
           qrbox: { width: 250, height: 250 },
           rememberLastUsedCamera: true,
+          aspectRatio: 1.333,
           formatsToSupport: [
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.CODE_39,
@@ -119,8 +219,10 @@
           ]
         };
         
+        // Запуск камеры
+        statusEl.textContent = '📹 Активация камеры...';
         await html5QrCode.start(
-          { facingMode: "environment" },
+          selectedCamera.id,
           config,
           (decodedText) => {
             if (isScanning && decodedText?.trim()) {
@@ -129,52 +231,73 @@
               statusEl.textContent = '✓ ' + decodedText;
               statusEl.className = 'success';
               
-              // Звуковой сигнал
-              try {
-                const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.frequency.value = 800;
-                osc.type = 'sine';
-                gain.gain.value = 0.1;
-                osc.start(ctx.currentTime);
-                osc.stop(ctx.currentTime + 0.05);
-                setTimeout(() => ctx.close(), 100);
-              } catch(e) {}
+              // Звук
+              playBeep();
               
               setTimeout(() => {
                 if (isScanning) {
-                  statusEl.textContent = '🎯 Наведите камеру на штрихкод или QR';
+                  statusEl.textContent = '🎯 Наведите камеру на штрихкод';
                   statusEl.className = '';
                 }
               }, 1000);
             }
           },
-          (errorMessage) => { /* игнорируем */ }
+          (errorMessage) => {
+            // Игнорируем ошибки декодирования
+          }
         );
         
         statusEl.textContent = '🎯 Наведите камеру на штрихкод или QR';
         statusEl.className = '';
-        console.log('✅ Сканер запущен');
+        log('✅ Камера запущена успешно');
         
       } catch (err) {
         console.error('❌ Ошибка:', err);
         statusEl.textContent = '⚠️ ' + (err.message || 'Ошибка камеры');
         statusEl.className = 'error';
+        log('❌ ' + err.message);
         
+        // Подсказки
         const msg = (err.message || '').toLowerCase();
-        if (msg.includes('permission') || msg.includes('notallowed')) {
-          statusEl.textContent = '❌ Разрешите доступ к камере в настройках';
-        } else if (msg.includes('notfound') || msg.includes('no device')) {
-          statusEl.textContent = '📷 Камера не найдена';
+        if (msg.includes('permission') || msg.includes('notallowed') || msg.includes('denied')) {
+          statusEl.textContent = '❌ Разрешите доступ к камере:\nНастройки → Safari/Chrome → Камера';
+        } else if (msg.includes('notfound') || msg.includes('no device') || msg.includes('empty')) {
+          statusEl.textContent = '📷 Камера не найдена\nПроверьте подключение камеры';
+        } else if (msg.includes('notreadable') || msg.includes('in use')) {
+          statusEl.textContent = '⚠️ Камера занята\nЗакройте другие приложения';
         } else if (msg.includes('https') || msg.includes('secure')) {
-          statusEl.textContent = '🔒 Требуется HTTPS';
+          statusEl.textContent = '🔒 Требуется HTTPS\nОткройте https://vadimshatem88.github.io/scanner-app/';
         }
       }
     }
     
+    // Звуковой сигнал
+    function playBeep() {
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.frequency.value = 800;
+        osc.type = 'sine';
+        gain.gain.value = 0.1;
+        
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.05);
+        
+        setTimeout(() => ctx.close(), 100);
+      } catch(e) {
+        log('Audio error: ' + e.message);
+      }
+    }
+    
+    // Кнопка завершения
     document.getElementById('btnStop').addEventListener('click', () => {
       isScanning = false;
       statusEl.textContent = '⏹ Остановка...';
@@ -191,17 +314,19 @@
             }, 1000);
           })
           .catch(err => {
-            console.error('Ошибка остановки:', err);
             statusEl.textContent = '⚠️ Ошибка: ' + err.message;
             statusEl.className = 'error';
           });
       }
     });
     
+    // Запуск после загрузки
     window.addEventListener('load', () => {
+      log('Страница загружена');
       setTimeout(startScanner, 500);
     });
     
+    // Очистка
     window.addEventListener('beforeunload', () => {
       isScanning = false;
       if (html5QrCode) {
@@ -209,7 +334,7 @@
       }
     });
     
-    // Активация аудио на iOS
+    // Активация на iOS
     document.body.addEventListener('touchstart', () => {
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
