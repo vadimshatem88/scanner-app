@@ -2,13 +2,13 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Сканер</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Сканер штрихкодов</title>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #000;
       color: #fff;
       height: 100dvh;
@@ -17,110 +17,205 @@
       align-items: center;
       justify-content: center;
       padding: 20px;
+      overflow: hidden;
     }
     #reader {
       width: 100%;
       max-width: 500px;
       border-radius: 16px;
       overflow: hidden;
-      border: 2px solid #27ae60;
+      border: 3px solid #4CAF50;
+      background: #111;
+    }
+    #reader video {
+      border-radius: 16px;
     }
     #status {
-      margin-top: 15px;
-      font-size: 14px;
-      opacity: 0.85;
+      margin-top: 20px;
+      font-size: 15px;
+      opacity: 0.9;
       text-align: center;
+      min-height: 22px;
+      padding: 0 10px;
     }
     #btnStop {
-      margin-top: 20px;
-      padding: 12px 24px;
-      background: rgba(220,53,69,0.9);
+      margin-top: 25px;
+      padding: 14px 28px;
+      background: linear-gradient(135deg, #f44336 0%, #da190b 100%);
       color: #fff;
       border: none;
-      border-radius: 10px;
-      font-size: 14px;
+      border-radius: 12px;
+      font-size: 15px;
       font-weight: 600;
       cursor: pointer;
+      box-shadow: 0 4px 15px rgba(244,67,54,0.3);
+      touch-action: manipulation;
+    }
+    #btnStop:active { 
+      transform: scale(0.97);
+      box-shadow: 0 2px 10px rgba(244,67,54,0.4);
     }
     .error { color: #ff6b6b !important; }
     .success { color: #51cf66 !important; }
+    .info { color: #74c0fc !important; }
   </style>
 </head>
 <body>
   <div id="reader"></div>
-  <div id="status">🎯 Наведите камеру на штрихкод</div>
+  <div id="status">🎯 Наведите камеру на штрихкод или QR</div>
   <button id="btnStop">⏹ Завершить</button>
 
   <script>
+    const params = new URLSearchParams(window.location.search);
+    const location = params.get('location') || 'Не указано';
+    
     let html5QrCode = null;
     let isScanning = true;
     const statusEl = document.getElementById('status');
     
+    // Отправка данных в родительское окно (Apps Script)
     function sendToParent(barcode) {
       try {
+        // Для iframe
         if (window.parent && window.parent !== window) {
-          window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
+          window.parent.postMessage({
+            type: 'barcode_scanned',
+            barcode: barcode,
+            location: location
+          }, '*');
         }
+        // Для window.open
         if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'barcode_scanned', barcode }, '*');
+          window.opener.postMessage({
+            type: 'barcode_scanned',
+            barcode: barcode,
+            location: location
+          }, '*');
         }
-      } catch (e) { console.error(e); }
+        console.log('📤 Отправлено:', barcode);
+      } catch (e) {
+        console.error('❌ Ошибка отправки:', e);
+      }
     }
     
     async function startScanner() {
       try {
-        statusEl.textContent = '📷 Запрос камеры...';
+        statusEl.textContent = '📷 Запрос доступа к камере...';
+        statusEl.className = 'info';
+        
         html5QrCode = new Html5Qrcode("reader");
+        
+        const config = { 
+          fps: 10, 
+          qrbox: { width: 250, height: 250 },
+          rememberLastUsedCamera: true,
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A
+          ]
+        };
         
         await html5QrCode.start(
           { facingMode: "environment" },
-          { 
-            fps: 10, 
-            qrbox: { width: 250, height: 250 },
-            formatsToSupport: [
-              Html5QrcodeSupportedFormats.QR_CODE,
-              Html5QrcodeSupportedFormats.CODE_39,
-              Html5QrcodeSupportedFormats.CODE_128
-            ]
-          },
+          config,
           (decodedText) => {
             if (isScanning && decodedText?.trim()) {
               sendToParent(decodedText.trim());
+              
               statusEl.textContent = '✓ ' + decodedText;
               statusEl.className = 'success';
+              
+              // Звуковой сигнал
+              try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 800;
+                osc.type = 'sine';
+                gain.gain.value = 0.1;
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.05);
+                setTimeout(() => ctx.close(), 100);
+              } catch(e) {}
+              
               setTimeout(() => {
                 if (isScanning) {
-                  statusEl.textContent = '🎯 Наведите камеру на штрихкод';
+                  statusEl.textContent = '🎯 Наведите камеру на штрихкод или QR';
                   statusEl.className = '';
                 }
-              }, 800);
+              }, 1000);
             }
           },
-          (errorMessage) => { }
+          (errorMessage) => { /* игнорируем */ }
         );
         
-        statusEl.textContent = '🎯 Наведите камеру на штрихкод';
+        statusEl.textContent = '🎯 Наведите камеру на штрихкод или QR';
+        statusEl.className = '';
+        console.log('✅ Сканер запущен');
+        
       } catch (err) {
-        statusEl.textContent = '⚠ ' + (err.message || 'Ошибка');
+        console.error('❌ Ошибка:', err);
+        statusEl.textContent = '⚠️ ' + (err.message || 'Ошибка камеры');
         statusEl.className = 'error';
+        
+        const msg = (err.message || '').toLowerCase();
+        if (msg.includes('permission') || msg.includes('notallowed')) {
+          statusEl.textContent = '❌ Разрешите доступ к камере в настройках';
+        } else if (msg.includes('notfound') || msg.includes('no device')) {
+          statusEl.textContent = '📷 Камера не найдена';
+        } else if (msg.includes('https') || msg.includes('secure')) {
+          statusEl.textContent = '🔒 Требуется HTTPS';
+        }
       }
     }
     
     document.getElementById('btnStop').addEventListener('click', () => {
       isScanning = false;
+      statusEl.textContent = '⏹ Остановка...';
+      
       if (html5QrCode) {
-        html5QrCode.stop().then(() => {
-          html5QrCode.clear();
-          statusEl.textContent = '✅ Готово!';
-          setTimeout(() => window.close(), 1000);
-        });
+        html5QrCode.stop()
+          .then(() => {
+            html5QrCode.clear();
+            statusEl.textContent = '✅ Готово! Можно закрыть окно';
+            setTimeout(() => {
+              if (window.opener && !window.opener.closed) {
+                window.close();
+              }
+            }, 1000);
+          })
+          .catch(err => {
+            console.error('Ошибка остановки:', err);
+            statusEl.textContent = '⚠️ Ошибка: ' + err.message;
+            statusEl.className = 'error';
+          });
       }
     });
     
-    window.addEventListener('load', () => setTimeout(startScanner, 300));
-    window.addEventListener('beforeunload', () => {
-      if (html5QrCode) html5QrCode.stop().catch(() => {});
+    window.addEventListener('load', () => {
+      setTimeout(startScanner, 500);
     });
+    
+    window.addEventListener('beforeunload', () => {
+      isScanning = false;
+      if (html5QrCode) {
+        html5QrCode.stop().catch(() => {});
+      }
+    });
+    
+    // Активация аудио на iOS
+    document.body.addEventListener('touchstart', () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === 'suspended') ctx.resume();
+      } catch(e) {}
+    }, { once: true });
   </script>
 </body>
 </html>
