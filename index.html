@@ -2,11 +2,11 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Сканер</title>
-  <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Сканер ШК</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body {
       font-family: system-ui, -apple-system, sans-serif;
       background: #000;
@@ -17,183 +17,167 @@
       align-items: center;
       justify-content: center;
       padding: 20px;
+      overflow: hidden;
     }
-    #scanner {
+    #reader {
       width: 100%;
       max-width: 500px;
-      height: 300px;
-      border: 2px solid #27ae60;
       border-radius: 16px;
       overflow: hidden;
+      border: 2px solid #27ae60;
       position: relative;
+      background: #111;
     }
-    #scanner canvas {
-      width: 100% !important;
-      height: 100% !important;
-    }
+    #reader video { border-radius: 16px; }
+    
     #status {
       margin-top: 15px;
-      font-size: 14px;
+      font-size: 16px;
+      font-weight: 500;
       text-align: center;
+      min-height: 24px;
+      transition: all 0.2s;
     }
+    
     #btnStop {
       margin-top: 20px;
-      padding: 12px 24px;
+      padding: 12px 28px;
       background: #f44336;
       color: #fff;
       border: none;
-      border-radius: 10px;
-      font-size: 14px;
+      border-radius: 12px;
+      font-size: 15px;
       font-weight: 600;
       cursor: pointer;
+      box-shadow: 0 4px 12px rgba(244,67,54,0.3);
     }
-    .error { color: #ff6b6b !important; }
-    .success { color: #51cf66 !important; }
+    #btnStop:active { transform: scale(0.97); }
+    
+    .success { color: #51cf66; }
+    .cooldown { color: #ffd43b; }
+    .error { color: #ff6b6b; }
+    
+    /* Скрываем лишние элементы библиотеки для чистого интерфейса */
+    #reader > div:not(#reader__scan_region) { display: none !important; }
   </style>
 </head>
 <body>
-  <div id="scanner"></div>
+  <div id="reader"></div>
   <div id="status">🎯 Наведите на штрихкод</div>
   <button id="btnStop">⏹ Завершить</button>
 
   <script>
-    let isScanning = true;
-    let lastCode = '';
-    let lastTime = 0;
+    let html5QrCode = null;
+    let cooldownActive = false;
+    const statusEl = document.getElementById('status');
     
+    // Отправка данных в родительское окно (Apps Script)
     function sendToParent(barcode) {
-      // ✅ Убираем звёздочки и лишние символы
-      let cleanBarcode = barcode.replace(/\*/g, '').trim();
-      
-      console.log('📤 Отправка:', cleanBarcode);
-      
-      if (window.parent !== window) {
-        window.parent.postMessage({ type: 'barcode_scanned', barcode: cleanBarcode }, '*');
-      }
-      if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'barcode_scanned', barcode: cleanBarcode }, '*');
+      // ✅ Убираем звёздочки и пробелы
+      const clean = barcode.replace(/\*/g, '').trim();
+      try {
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'barcode_scanned', barcode: clean }, '*');
+        }
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: 'barcode_scanned', barcode: clean }, '*');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    async function startScanner() {
+      try {
+        statusEl.textContent = '📷 Инициализация...';
+        html5QrCode = new Html5Qrcode("reader");
+        
+        // ✅ Настройки специально для 1D штрихкодов (Code 128 / Code 39)
+        const config = {
+          fps: 10,
+          qrbox: { width: 280, height: 100 }, // Прямоугольная область (лучше для линейных ШК)
+          aspectRatio: 2.0,
+          disableFlip: true,
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128, // Основной формат твоих бирок
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.QR_CODE
+          ]
+        };
+
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          onScanSuccess,
+          onScanFailure
+        );
+        
+        statusEl.textContent = '🎯 Наведите на штрихкод';
+      } catch (err) {
+        statusEl.textContent = '⚠️ ' + (err.message || 'Ошибка камеры');
+        statusEl.className = 'error';
       }
     }
-    
-    // ✅ Правильная инициализация Quagga2
-    Quagga.init({
-      inputStream: {
-        name: "Live",
-        type: "LiveStream",
-        target: document.querySelector('#scanner'),
-        constraints: {
-          facingMode: "environment",
-          width: { min: 640 },
-          height: { min: 480 },
-          aspectRatio: { min: 1, max: 2 }
-        },
-        area: {
-          top: "20%",
-          right: "10%",
-          left: "10%",
-          bottom: "20%"
-        },
-        singleChannel: false
-      },
-      decoder: {
-        readers: [
-          {
-            format: "code_128_reader",
-            config: {}
-          }
-        ],
-        multiple: false,
-        debug: {
-          drawOnCanvas: true,
-          showBox: true
-        }
-      },
-      locate: true,
-      frequency: 10,
-      numOfWorkers: 2
-    }, function(err) {
-      if (err) {
-        console.error('❌ Ошибка инициализации:', err);
-        document.getElementById('status').textContent = '⚠️ Ошибка: ' + err;
-        document.getElementById('status').className = 'error';
-        return;
-      }
-      console.log('✅ Quagga инициализирован');
-      Quagga.start();
-    });
-    
-    // ✅ Обработка результатов
-    Quagga.onDetected(function(data) {
-      if (!isScanning) return;
+
+    // ✅ Успешное сканирование
+    function onScanSuccess(decodedText, decodedResult) {
+      if (cooldownActive) return; // Игнорируем сканы во время паузы
       
-      const code = data.codeResult.code;
-      const now = Date.now();
+      // Активируем паузу на 2 секунды
+      cooldownActive = true;
+      statusEl.textContent = '⏳ Пауза 2 сек...';
+      statusEl.className = 'cooldown';
       
-      // Фильтруем дубликаты (не чаще 1 раза в секунду)
-      if (code === lastCode && (now - lastTime) < 1000) {
-        return;
-      }
+      // Отправляем очищенный код
+      sendToParent(decodedText);
       
-      // ✅ Проверяем, что это похожий на нужный формат код
-      // Код должен содержать буквы и цифры, длина 10-20 символов
-      if (code && code.length >= 10 && code.length <= 20) {
-        // Убираем звёздочки
-        const cleanCode = code.replace(/\*/g, '');
-        
-        // Проверяем, что код содержит буквы (как в примере 26RTD1188539-6)
-        if (/[A-Z]/i.test(cleanCode)) {
-          lastCode = code;
-          lastTime = now;
-          
-          console.log('✅ Найдено:', code, '→', cleanCode);
-          
-          sendToParent(code);
-          
-          const statusEl = document.getElementById('status');
-          statusEl.textContent = '✓ ' + cleanCode;
-          statusEl.className = 'success';
-          
-          // Звуковой сигнал
-          try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.frequency.value = 800;
-            osc.type = 'sine';
-            gain.gain.value = 0.1;
-            osc.start();
-            osc.stop(ctx.currentTime + 0.1);
-          } catch(e) {}
-          
-          setTimeout(() => {
-            if (isScanning) {
-              statusEl.textContent = '🎯 Наведите на штрихкод';
-              statusEl.className = '';
-            }
-          }, 1000);
-        }
-      }
-    });
-    
-    // Ошибки
-    Quagga.onProcessed(function(result) {
-      if (result && result.codeResult && result.codeResult.code) {
-        // Можно добавить отладку
-      }
-    });
-    
+      // Визуальный и звуковой фидбек
+      const displayText = decodedText.replace(/\*/g, '');
+      statusEl.textContent = '✓ ' + displayText;
+      statusEl.className = 'success';
+      playBeep();
+
+      // Таймер возврата к сканированию
+      setTimeout(() => {
+        cooldownActive = false;
+        statusEl.textContent = '🎯 Наведите на штрихкод';
+        statusEl.className = '';
+      }, 2000);
+    }
+
+    function onScanFailure(error) {
+      // Ошибки в потоке нормальны (нет ШК в кадре), игнорируем
+    }
+
+    function playBeep() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 800;
+        osc.type = 'sine';
+        gain.gain.value = 0.1;
+        osc.start();
+        osc.stop(ctx.currentTime + 0.1);
+      } catch(e) {}
+    }
+
     document.getElementById('btnStop').addEventListener('click', () => {
-      isScanning = false;
-      Quagga.stop();
-      document.getElementById('status').textContent = '✅ Завершено';
-      setTimeout(() => window.close(), 500);
+      if (html5QrCode) {
+        html5QrCode.stop().then(() => {
+          html5QrCode.clear();
+          statusEl.textContent = '✅ Готово';
+          setTimeout(() => window.close(), 500);
+        }).catch(console.error);
+      }
     });
-    
+
+    window.addEventListener('load', () => setTimeout(startScanner, 300));
     window.addEventListener('beforeunload', () => {
-      isScanning = false;
-      Quagga.stop();
+      if (html5QrCode) html5QrCode.stop().catch(() => {});
     });
   </script>
 </body>
