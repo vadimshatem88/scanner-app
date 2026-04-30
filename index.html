@@ -8,7 +8,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: system-ui, sans-serif;
+      font-family: system-ui, -apple-system, sans-serif;
       background: #000;
       color: #fff;
       height: 100dvh;
@@ -25,6 +25,11 @@
       border: 2px solid #27ae60;
       border-radius: 16px;
       overflow: hidden;
+      position: relative;
+    }
+    #scanner canvas {
+      width: 100% !important;
+      height: 100% !important;
     }
     #status {
       margin-top: 15px;
@@ -42,6 +47,8 @@
       font-weight: 600;
       cursor: pointer;
     }
+    .error { color: #ff6b6b !important; }
+    .success { color: #51cf66 !important; }
   </style>
 </head>
 <body>
@@ -51,77 +58,142 @@
 
   <script>
     let isScanning = true;
+    let lastCode = '';
+    let lastTime = 0;
     
     function sendToParent(barcode) {
+      // ✅ Убираем звёздочки и лишние символы
+      let cleanBarcode = barcode.replace(/\*/g, '').trim();
+      
+      console.log('📤 Отправка:', cleanBarcode);
+      
       if (window.parent !== window) {
-        window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
+        window.parent.postMessage({ type: 'barcode_scanned', barcode: cleanBarcode }, '*');
       }
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'barcode_scanned', barcode }, '*');
+        window.opener.postMessage({ type: 'barcode_scanned', barcode: cleanBarcode }, '*');
       }
     }
     
+    // ✅ Правильная инициализация Quagga2
     Quagga.init({
       inputStream: {
         name: "Live",
         type: "LiveStream",
         target: document.querySelector('#scanner'),
         constraints: {
-          facingMode: "environment"
+          facingMode: "environment",
+          width: { min: 640 },
+          height: { min: 480 },
+          aspectRatio: { min: 1, max: 2 }
         },
         area: {
-          top: "0%",
-          right: "0%",
-          left: "0%",
-          bottom: "0%"
-        }
+          top: "20%",
+          right: "10%",
+          left: "10%",
+          bottom: "20%"
+        },
+        singleChannel: false
       },
       decoder: {
         readers: [
-          "code_128_reader",
-          "code_39_reader",
-          "code_93_reader",
-          "ean_reader",
-          "ean_8_reader",
-          "upc_reader",
-          "upc_e_reader"
+          {
+            format: "code_128_reader",
+            config: {}
+          }
         ],
-        multiple: false
+        multiple: false,
+        debug: {
+          drawOnCanvas: true,
+          showBox: true
+        }
       },
-      locator: {
-        patchSize: "medium",
-        halfSample: true
-      }
+      locate: true,
+      frequency: 10,
+      numOfWorkers: 2
     }, function(err) {
       if (err) {
+        console.error('❌ Ошибка инициализации:', err);
         document.getElementById('status').textContent = '⚠️ Ошибка: ' + err;
+        document.getElementById('status').className = 'error';
         return;
       }
+      console.log('✅ Quagga инициализирован');
       Quagga.start();
     });
     
+    // ✅ Обработка результатов
     Quagga.onDetected(function(data) {
-      if (isScanning && data.codeResult && data.codeResult.code) {
-        const barcode = data.codeResult.code;
-        sendToParent(barcode);
+      if (!isScanning) return;
+      
+      const code = data.codeResult.code;
+      const now = Date.now();
+      
+      // Фильтруем дубликаты (не чаще 1 раза в секунду)
+      if (code === lastCode && (now - lastTime) < 1000) {
+        return;
+      }
+      
+      // ✅ Проверяем, что это похожий на нужный формат код
+      // Код должен содержать буквы и цифры, длина 10-20 символов
+      if (code && code.length >= 10 && code.length <= 20) {
+        // Убираем звёздочки
+        const cleanCode = code.replace(/\*/g, '');
         
-        const statusEl = document.getElementById('status');
-        statusEl.textContent = '✓ ' + barcode;
-        statusEl.style.color = '#4CAF50';
-        
-        setTimeout(() => {
-          if (isScanning) {
-            statusEl.textContent = '🎯 Наведите на штрихкод';
-            statusEl.style.color = '';
-          }
-        }, 800);
+        // Проверяем, что код содержит буквы (как в примере 26RTD1188539-6)
+        if (/[A-Z]/i.test(cleanCode)) {
+          lastCode = code;
+          lastTime = now;
+          
+          console.log('✅ Найдено:', code, '→', cleanCode);
+          
+          sendToParent(code);
+          
+          const statusEl = document.getElementById('status');
+          statusEl.textContent = '✓ ' + cleanCode;
+          statusEl.className = 'success';
+          
+          // Звуковой сигнал
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 800;
+            osc.type = 'sine';
+            gain.gain.value = 0.1;
+            osc.start();
+            osc.stop(ctx.currentTime + 0.1);
+          } catch(e) {}
+          
+          setTimeout(() => {
+            if (isScanning) {
+              statusEl.textContent = '🎯 Наведите на штрихкод';
+              statusEl.className = '';
+            }
+          }, 1000);
+        }
+      }
+    });
+    
+    // Ошибки
+    Quagga.onProcessed(function(result) {
+      if (result && result.codeResult && result.codeResult.code) {
+        // Можно добавить отладку
       }
     });
     
     document.getElementById('btnStop').addEventListener('click', () => {
       isScanning = false;
       Quagga.stop();
+      document.getElementById('status').textContent = '✅ Завершено';
       setTimeout(() => window.close(), 500);
+    });
+    
+    window.addEventListener('beforeunload', () => {
+      isScanning = false;
+      Quagga.stop();
     });
   </script>
 </body>
