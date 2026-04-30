@@ -2,345 +2,101 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Сканер штрихкодов</title>
-  <!-- Подключаем библиотеку -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Сканер</title>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: system-ui, sans-serif;
       background: #000;
       color: #fff;
-      height: 100dvh;
+      height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       padding: 20px;
-      overflow: hidden;
     }
     #reader {
       width: 100%;
       max-width: 500px;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 3px solid #4CAF50;
-      background: #111;
-      min-height: 300px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      border: 2px solid #4CAF50;
+      border-radius: 12px;
     }
     #status {
-      margin-top: 20px;
-      font-size: 15px;
-      opacity: 0.9;
+      margin-top: 15px;
+      font-size: 14px;
       text-align: center;
-      min-height: 22px;
-      padding: 0 10px;
-      max-width: 90%;
     }
     #btnStop {
-      margin-top: 25px;
-      padding: 14px 28px;
-      background: linear-gradient(135deg, #f44336 0%, #da190b 100%);
+      margin-top: 20px;
+      padding: 12px 24px;
+      background: #f44336;
       color: #fff;
       border: none;
-      border-radius: 12px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      box-shadow: 0 4px 15px rgba(244,67,54,0.3);
-    }
-    #btnStop:active { transform: scale(0.97); }
-    .error { color: #ff6b6b !important; }
-    .success { color: #51cf66 !important; }
-    .info { color: #74c0fc !important; }
-    .loading {
-      width: 40px;
-      height: 40px;
-      border: 4px solid rgba(76,175,80,0.3);
-      border-top-color: #4CAF50;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    #debug {
-      position: fixed;
-      bottom: 10px;
-      left: 10px;
-      right: 10px;
-      background: rgba(0,0,0,0.8);
-      padding: 10px;
       border-radius: 8px;
-      font-size: 11px;
-      color: #888;
-      display: none;
+      font-size: 14px;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
-  <div id="reader"><div class="loading"></div></div>
-  <div id="status">📷 Инициализация камеры...</div>
+  <div id="reader"></div>
+  <div id="status">🎯 Наведите камеру на штрихкод</div>
   <button id="btnStop">⏹ Завершить</button>
-  <div id="debug"></div>
 
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const location = params.get('location') || 'Не указано';
-    
     let html5QrCode = null;
     let isScanning = true;
     const statusEl = document.getElementById('status');
-    const debugEl = document.getElementById('debug');
-    const readerEl = document.getElementById('reader');
     
-    // Логирование для отладки
-    function log(msg) {
-      console.log('[SCANNER]', msg);
-      debugEl.textContent = msg;
-      debugEl.style.display = 'block';
-    }
-    
-    // Отправка данных
     function sendToParent(barcode) {
-      try {
-        if (window.parent && window.parent !== window) {
-          window.parent.postMessage({
-            type: 'barcode_scanned',
-            barcode: barcode,
-            location: location
-          }, '*');
-        }
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({
-            type: 'barcode_scanned',
-            barcode: barcode,
-            location: location
-          }, '*');
-        }
-        log('📤 Отправлено: ' + barcode);
-      } catch (e) {
-        console.error('❌ Ошибка отправки:', e);
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
+      }
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: 'barcode_scanned', barcode }, '*');
       }
     }
     
-    // Проверка поддержки камеры
-    async function checkCameraSupport() {
-      try {
-        log('Проверка поддержки камеры...');
-        
-        // Проверка getUserMedia
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Браузер не поддерживает доступ к камере');
-        }
-        
-        // Проверка HTTPS
-        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-          throw new Error('Требуется HTTPS для доступа к камере');
-        }
-        
-        // Проверка разрешений
-        if (navigator.permissions) {
-          try {
-            const permission = await navigator.permissions.query({ name: 'camera' });
-            log('Статус камеры: ' + permission.state);
-            if (permission.state === 'denied') {
-              throw new Error('Доступ к камере запрещён в настройках');
-            }
-          } catch (e) {
-            log('Не удалось проверить разрешения: ' + e.message);
-          }
-        }
-        
-        return true;
-      } catch (err) {
-        log('❌ ' + err.message);
-        throw err;
-      }
-    }
-    
-    // Запуск сканера
     async function startScanner() {
       try {
-        statusEl.textContent = '📷 Проверка камеры...';
-        statusEl.className = 'info';
-        log('Запуск сканера...');
-        
-        // Проверка поддержки
-        await checkCameraSupport();
-        
-        // Проверка библиотеки
-        if (typeof Html5Qrcode === 'undefined') {
-          throw new Error('Библиотека html5-qrcode не загрузилась');
-        }
-        log('Библиотека загружена');
-        
-        // Создание экземпляра
         html5QrCode = new Html5Qrcode("reader");
-        log('Экземпляр создан');
         
-        // Получение списка камер
-        const cameras = await Html5Qrcode.getCameras();
-        log('Найдено камер: ' + cameras.length);
-        
-        if (cameras.length === 0) {
-          throw new Error('Камеры не найдены на устройстве');
-        }
-        
-        // Поиск задней камеры
-        let selectedCamera = cameras[0];
-        for (let cam of cameras) {
-          const label = (cam.label || '').toLowerCase();
-          if (label.includes('back') || label.includes('rear') || 
-              label.includes('environment') || label.includes('задняя')) {
-            selectedCamera = cam;
-            log('Выбрана задняя камера: ' + selectedCamera.label);
-            break;
-          }
-        }
-        
-        // Конфигурация
-        const config = { 
-          fps: 10, 
-          qrbox: { width: 250, height: 250 },
-          rememberLastUsedCamera: true,
-          aspectRatio: 1.333,
-          formatsToSupport: [
-            Html5QrcodeSupportedFormats.QR_CODE,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A
-          ]
-        };
-        
-        // Запуск камеры
-        statusEl.textContent = '📹 Активация камеры...';
         await html5QrCode.start(
-          selectedCamera.id,
-          config,
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
           (decodedText) => {
-            if (isScanning && decodedText?.trim()) {
-              sendToParent(decodedText.trim());
-              
+            if (isScanning && decodedText) {
+              sendToParent(decodedText);
               statusEl.textContent = '✓ ' + decodedText;
-              statusEl.className = 'success';
-              
-              // Звук
-              playBeep();
-              
+              statusEl.style.color = '#4CAF50';
               setTimeout(() => {
-                if (isScanning) {
-                  statusEl.textContent = '🎯 Наведите камеру на штрихкод';
-                  statusEl.className = '';
-                }
-              }, 1000);
+                statusEl.textContent = '🎯 Наведите камеру на штрихкод';
+                statusEl.style.color = '';
+              }, 800);
             }
           },
-          (errorMessage) => {
-            // Игнорируем ошибки декодирования
-          }
+          () => {}
         );
-        
-        statusEl.textContent = '🎯 Наведите камеру на штрихкод или QR';
-        statusEl.className = '';
-        log('✅ Камера запущена успешно');
-        
       } catch (err) {
-        console.error('❌ Ошибка:', err);
-        statusEl.textContent = '⚠️ ' + (err.message || 'Ошибка камеры');
-        statusEl.className = 'error';
-        log('❌ ' + err.message);
-        
-        // Подсказки
-        const msg = (err.message || '').toLowerCase();
-        if (msg.includes('permission') || msg.includes('notallowed') || msg.includes('denied')) {
-          statusEl.textContent = '❌ Разрешите доступ к камере:\nНастройки → Safari/Chrome → Камера';
-        } else if (msg.includes('notfound') || msg.includes('no device') || msg.includes('empty')) {
-          statusEl.textContent = '📷 Камера не найдена\nПроверьте подключение камеры';
-        } else if (msg.includes('notreadable') || msg.includes('in use')) {
-          statusEl.textContent = '⚠️ Камера занята\nЗакройте другие приложения';
-        } else if (msg.includes('https') || msg.includes('secure')) {
-          statusEl.textContent = '🔒 Требуется HTTPS\nОткройте https://vadimshatem88.github.io/scanner-app/';
-        }
+        statusEl.textContent = 'Ошибка: ' + err.message;
+        statusEl.style.color = '#f44336';
       }
     }
     
-    // Звуковой сигнал
-    function playBeep() {
-      try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContext) return;
-        
-        const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        
-        osc.frequency.value = 800;
-        osc.type = 'sine';
-        gain.gain.value = 0.1;
-        
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.05);
-        
-        setTimeout(() => ctx.close(), 100);
-      } catch(e) {
-        log('Audio error: ' + e.message);
-      }
-    }
-    
-    // Кнопка завершения
     document.getElementById('btnStop').addEventListener('click', () => {
       isScanning = false;
-      statusEl.textContent = '⏹ Остановка...';
-      
       if (html5QrCode) {
-        html5QrCode.stop()
-          .then(() => {
-            html5QrCode.clear();
-            statusEl.textContent = '✅ Готово! Можно закрыть окно';
-            setTimeout(() => {
-              if (window.opener && !window.opener.closed) {
-                window.close();
-              }
-            }, 1000);
-          })
-          .catch(err => {
-            statusEl.textContent = '⚠️ Ошибка: ' + err.message;
-            statusEl.className = 'error';
-          });
+        html5QrCode.stop().then(() => {
+          html5QrCode.clear();
+          window.close();
+        });
       }
     });
     
-    // Запуск после загрузки
-    window.addEventListener('load', () => {
-      log('Страница загружена');
-      setTimeout(startScanner, 500);
-    });
-    
-    // Очистка
-    window.addEventListener('beforeunload', () => {
-      isScanning = false;
-      if (html5QrCode) {
-        html5QrCode.stop().catch(() => {});
-      }
-    });
-    
-    // Активация на iOS
-    document.body.addEventListener('touchstart', () => {
-      try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        if (ctx.state === 'suspended') ctx.resume();
-      } catch(e) {}
-    }, { once: true });
+    window.addEventListener('load', () => startScanner());
   </script>
 </body>
 </html>
