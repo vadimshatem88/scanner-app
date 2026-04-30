@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Сканер</title>
+  <title>Сканер (внешний)</title>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11,7 +11,7 @@
       font-family: system-ui, sans-serif;
       background: #000;
       color: #fff;
-      height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -21,24 +21,30 @@
     #reader {
       width: 100%;
       max-width: 500px;
-      border: 2px solid #4CAF50;
-      border-radius: 12px;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 2px solid #27ae60;
+      background: #111;
     }
     #status {
       margin-top: 15px;
       font-size: 14px;
+      opacity: 0.85;
       text-align: center;
     }
     #btnStop {
       margin-top: 20px;
       padding: 12px 24px;
-      background: #f44336;
+      background: rgba(220,53,69,0.9);
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: 10px;
       font-size: 14px;
+      font-weight: 600;
       cursor: pointer;
     }
+    .error { color: #ff6b6b !important; }
+    .success { color: #51cf66 !important; }
   </style>
 </head>
 <body>
@@ -52,37 +58,52 @@
     const statusEl = document.getElementById('status');
     
     function sendToParent(barcode) {
-      if (window.parent !== window) {
-        window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
-      }
-      if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'barcode_scanned', barcode }, '*');
-      }
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'barcode_scanned', barcode }, '*');
+        }
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: 'barcode_scanned', barcode }, '*');
+        }
+      } catch (e) { console.error(e); }
     }
     
     async function startScanner() {
       try {
+        statusEl.textContent = '📷 Запрос камеры...';
         html5QrCode = new Html5Qrcode("reader");
         
         await html5QrCode.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
+          { 
+            fps: 10, 
+            qrbox: { width: 250, height: 250 },
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.QR_CODE,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.CODE_128
+            ]
+          },
           (decodedText) => {
-            if (isScanning && decodedText) {
-              sendToParent(decodedText);
+            if (isScanning && decodedText?.trim()) {
+              sendToParent(decodedText.trim());
               statusEl.textContent = '✓ ' + decodedText;
-              statusEl.style.color = '#4CAF50';
+              statusEl.className = 'success';
               setTimeout(() => {
-                statusEl.textContent = '🎯 Наведите камеру на штрихкод';
-                statusEl.style.color = '';
+                if (isScanning) {
+                  statusEl.textContent = '🎯 Наведите камеру на штрихкод';
+                  statusEl.className = '';
+                }
               }, 800);
             }
           },
-          () => {}
+          (errorMessage) => { }
         );
+        
+        statusEl.textContent = '🎯 Наведите камеру на штрихкод';
       } catch (err) {
-        statusEl.textContent = 'Ошибка: ' + err.message;
-        statusEl.style.color = '#f44336';
+        statusEl.textContent = '⚠ ' + (err.message || 'Ошибка');
+        statusEl.className = 'error';
       }
     }
     
@@ -91,12 +112,16 @@
       if (html5QrCode) {
         html5QrCode.stop().then(() => {
           html5QrCode.clear();
-          window.close();
+          statusEl.textContent = '✅ Готово!';
+          setTimeout(() => window.close(), 1000);
         });
       }
     });
     
-    window.addEventListener('load', () => startScanner());
+    window.addEventListener('load', () => setTimeout(startScanner, 300));
+    window.addEventListener('beforeunload', () => {
+      if (html5QrCode) html5QrCode.stop().catch(() => {});
+    });
   </script>
 </body>
 </html>
